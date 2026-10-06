@@ -530,6 +530,132 @@ class WebPluginTest(ItemInDBTestCase):
         assert response.status_code == 200
         assert len(res_json["results"]) == 0
 
+    def test_delete_album_id_without_delete_param_keeps_files(self):
+        web.app.config["READONLY"] = False
+
+        ipath = os.path.join(self.temp_dir, b"album_nodelflag_track.mp3")
+        shutil.copy(os.path.join(_common.RSRC, b"full.mp3"), ipath)
+        assert os.path.exists(ipath)
+        item = Item.from_path(ipath)
+        album = self.lib.add_album([item])
+
+        # DELETE without ?delete: DB record removed, file must survive
+        response = self.client.delete(f"/album/{album.id}")
+        assert response.status_code == 200
+
+        response = self.client.get(f"/album/{album.id}")
+        assert response.status_code == 404
+
+        assert os.path.exists(ipath)
+        os.remove(ipath)
+
+    def test_delete_album_id_removes_item_files(self):
+        """Regression: DELETE /album/{id}?delete must delete track files from disk.
+
+        Previously Album.remove() called self.items() after super().remove()
+        committed the album-row deletion; self.items() returned [] and no files
+        were removed.
+        """
+        web.app.config["READONLY"] = False
+
+        ipath = os.path.join(self.temp_dir, b"album_del_track.mp3")
+        shutil.copy(os.path.join(_common.RSRC, b"full.mp3"), ipath)
+        assert os.path.exists(ipath)
+        item = Item.from_path(ipath)
+        album = self.lib.add_album([item])
+        item_id = item.id
+
+        response = self.client.delete(f"/album/{album.id}?delete")
+        assert response.status_code == 200
+
+        # Album gone from DB
+        assert self.client.get(f"/album/{album.id}").status_code == 404
+        # Item gone from DB
+        assert self.client.get(f"/item/{item_id}").status_code == 404
+        # File gone from disk — this is the regression assertion
+        assert not os.path.exists(ipath)
+
+    def test_delete_album_id_multi_track_removes_all_files(self):
+        """All track files for a multi-track album are deleted with ?delete."""
+        web.app.config["READONLY"] = False
+
+        ipath1 = os.path.join(self.temp_dir, b"album_multi_t1.mp3")
+        ipath2 = os.path.join(self.temp_dir, b"album_multi_t2.mp3")
+        shutil.copy(os.path.join(_common.RSRC, b"full.mp3"), ipath1)
+        shutil.copy(os.path.join(_common.RSRC, b"full.mp3"), ipath2)
+        item1 = Item.from_path(ipath1)
+        item2 = Item.from_path(ipath2)
+        album = self.lib.add_album([item1, item2])
+        item1_id, item2_id = item1.id, item2.id
+
+        response = self.client.delete(f"/album/{album.id}?delete")
+        assert response.status_code == 200
+
+        assert self.client.get(f"/item/{item1_id}").status_code == 404
+        assert self.client.get(f"/item/{item2_id}").status_code == 404
+        assert not os.path.exists(ipath1)
+        assert not os.path.exists(ipath2)
+
+    def test_delete_album_id_removes_art_file(self):
+        """Album art file is deleted from disk when ?delete is passed."""
+        web.app.config["READONLY"] = False
+
+        ipath = os.path.join(self.temp_dir, b"album_art_del_track.mp3")
+        artpath = os.path.join(self.temp_dir, b"album_art_del_cover.jpg")
+        shutil.copy(os.path.join(_common.RSRC, b"full.mp3"), ipath)
+        shutil.copy(os.path.join(_common.RSRC, b"abbey.jpg"), artpath)
+        item = Item.from_path(ipath)
+        album = self.lib.add_album([item])
+        album.artpath = artpath
+        album.store()
+
+        response = self.client.delete(f"/album/{album.id}?delete")
+        assert response.status_code == 200
+
+        assert not os.path.exists(ipath)
+        assert not os.path.exists(artpath)
+
+    def test_delete_album_id_art_file_kept_without_delete_param(self):
+        """Album art file survives when ?delete is not passed."""
+        web.app.config["READONLY"] = False
+
+        ipath = os.path.join(self.temp_dir, b"album_art_keep_track.mp3")
+        artpath = os.path.join(self.temp_dir, b"album_art_keep_cover.jpg")
+        shutil.copy(os.path.join(_common.RSRC, b"full.mp3"), ipath)
+        shutil.copy(os.path.join(_common.RSRC, b"abbey.jpg"), artpath)
+        item = Item.from_path(ipath)
+        album = self.lib.add_album([item])
+        album.artpath = artpath
+        album.store()
+
+        response = self.client.delete(f"/album/{album.id}")
+        assert response.status_code == 200
+
+        assert os.path.exists(ipath)
+        assert os.path.exists(artpath)
+        os.remove(ipath)
+        os.remove(artpath)
+
+    def test_delete_album_query_removes_item_files(self):
+        """DELETE /album/query/...?delete must also remove track files from disk."""
+        web.app.config["READONLY"] = False
+
+        ipath = os.path.join(self.temp_dir, b"album_qdel_track.mp3")
+        shutil.copy(os.path.join(_common.RSRC, b"full.mp3"), ipath)
+        item = Item.from_path(ipath)
+        item.album = "test_delete_album_query_files_unique"
+        album = self.lib.add_album([item])
+        item_id = item.id
+
+        response = self.client.delete(
+            "/album/query/test_delete_album_query_files_unique?delete"
+        )
+        assert response.status_code == 200
+
+        assert self.client.get(f"/album/{album.id}").status_code == 404
+        assert self.client.get(f"/item/{item_id}").status_code == 404
+        assert not os.path.exists(ipath)
+
     def test_delete_album_all_fails(self):
         """DELETE is not supported for list all"""
 
